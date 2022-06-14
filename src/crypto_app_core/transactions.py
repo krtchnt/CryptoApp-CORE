@@ -73,8 +73,8 @@ class Network(metaclass=utils.Singleton):
     def increment_block_index(self):
         self.current_block_index += 1
 
-    def filter_user_with_name(self, name: str):
-        return filter(lambda u: u.name == name, self.connected_users)
+    def get_user_with_name(self, name: str):
+        return next((u for u in self.connected_users if u.name == name), None)
 
 
 N = Network()
