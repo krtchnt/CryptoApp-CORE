@@ -3,7 +3,5 @@
 __pycache__
 .vscode
 typings
-main.py
-test.py
 desktop.ini
-_threads.py
+src/crypto_app_core.egg-info

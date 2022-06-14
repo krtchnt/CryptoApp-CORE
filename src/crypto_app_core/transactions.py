@@ -11,11 +11,11 @@ import coloredlogs
 import pymerkle as mk
 import cryptography.exceptions as crypto_exc
 
-import auth
-import utils
-
 from cryptography.hazmat.primitives import hashes as hsh
 from cryptography.hazmat.primitives.asymmetric import padding as pdd, rsa
+
+from . import auth
+from .lib import utils
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,7 @@ class Network(metaclass=utils.Singleton):
     block_chain: 't.Optional[BlockChain]' = None
     transactions: 'list[list[Transaction]]' = a.field(factory=lambda: [[]])
     current_block_index: int = a.field(default=0, init=False)
+    connected_users: 'set[ExpensingUser]' = a.field(factory=set, init=False)
 
     block_reward: float = a.field(kw_only=True, default=5.000_000)
     difficulity: int = a.field(
@@ -71,6 +72,9 @@ class Network(metaclass=utils.Singleton):
 
     def increment_block_index(self):
         self.current_block_index += 1
+
+    def filter_user_with_name(self, name: str):
+        return filter(lambda u: u.name == name, self.connected_users)
 
 
 N = Network()
@@ -274,6 +278,9 @@ class ExpensingUser(User, metaclass=abc.ABCMeta):
         on_setattr=a.setters.validate,
     )
     caught_up_block_index: int = a.field(default=0, init=False)
+
+    def __attrs_post_init__(self):
+        N.connected_users.add(self)
 
     def cash_in(self, amount: float, /):
         self.balance += amount
