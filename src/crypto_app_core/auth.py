@@ -35,11 +35,15 @@ pepper: t.Final[str] = os.environ.get('CRYPTOAPP_PEPPER', '')
 
 
 def hash_64(data_bytes: bytes, /, hash_algo_: hsh.HashAlgorithm = hash_algo):
-    hashed_bytes = hsh.Hash(hash_algo_)
-    hashed_bytes.update(data_bytes)
-    b64_bytes = b64.b64encode(hashed_bytes.finalize())
+    b64_bytes = b64.b64encode(hash_(data_bytes, hash_algo_))
     hashed_data = b64_bytes.decode('ascii')
     return hashed_data
+
+
+def hash_(data_bytes: bytes, /, hash_algo_: hsh.HashAlgorithm = hash_algo):
+    hashed_bytes = hsh.Hash(hash_algo_)
+    hashed_bytes.update(data_bytes)
+    return hashed_bytes.finalize()
 
 
 def hash_b64_password(
