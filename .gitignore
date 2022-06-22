@@ -6,3 +6,6 @@ typings
 desktop.ini
 src/crypto_app_core.egg-info
 tests/_test2.py
+temp
+data
+.coverage

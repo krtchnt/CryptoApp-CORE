@@ -4,11 +4,12 @@ import time
 import base64 as b64
 import typing as t
 import logging
-import itertools
+import itertools as it
+import contextlib as ctxlib
 
 import attr as a
-import coloredlogs
 import pymerkle as mk
+import coloredlogs
 import cryptography.exceptions as crypto_exc
 
 from cryptography.hazmat.primitives import hashes as hsh, serialization as srz
@@ -63,7 +64,7 @@ class TallyNotApplied(LedgerException):
 
 
 @a.define
-class Network(metaclass=utils.Singleton):
+class Network(metaclass=utils.SingletonMeta):
     block_chain: 't.Optional[BlockChain]' = a.field(init=False, default=None)
     transactions_history: 'list[list[Transaction]]' = a.field(
         init=False, factory=lambda: [[]]
@@ -72,6 +73,12 @@ class Network(metaclass=utils.Singleton):
     current_block_index: int = a.field(default=0, init=False)
     # network_updates_sender: t.Callable[[], None] = a.field(default=lambda: None)
 
+    block_size: int = a.field(
+        kw_only=True,
+        default=10,
+        validator=a.validators.gt(0),
+        on_setattr=a.setters.frozen,
+    )
     block_reward: float = a.field(kw_only=True, default=5.000_000)
     difficulity: int = a.field(
         kw_only=True,
@@ -79,6 +86,14 @@ class Network(metaclass=utils.Singleton):
     )
     transaction_fees: float = a.field(kw_only=True, default=0.010_000)
     minimum_payment: float = a.field(kw_only=True, default=10.0)
+
+    @classmethod
+    @ctxlib.contextmanager
+    def temporary(cls, *args: t.Any, **kwargs: t.Any):
+        try:
+            yield cls(*args, **kwargs)
+        finally:
+            cls._instances.pop(cls)
 
     @property
     def current_transactions(self):
@@ -88,41 +103,44 @@ class Network(metaclass=utils.Singleton):
         self.transactions_history.append([])
         self.current_block_index += 1
 
-    def get_user_with_name(self, name: str):
+    def get_user_by_name(self, name: str):
         return next((u for u in self.connected_users if u.name == name), None)
 
     def remove_user_by_name(self, name: str):
-        assert (u := self.get_user_with_name(name))
+        assert (u := self.get_user_by_name(name))
         self.connected_users.remove(u)
         return u
 
-    def serialize(self, password: bytes):
-        new_conn_users = [*map(lambda u: u.serialize(password), self.connected_users)]
-        return a.evolve(self, connected_users=new_conn_users)
 
-    def deserialize(self, password: bytes):
-        new_conn_users = [*map(lambda u: u.deserialize(password), self.connected_users)]
-        return a.evolve(self, connected_users=new_conn_users)
-
-
-@a.frozen(eq=True, order=True, hash=True)
-class TransactionInfo:
-    sender: 'NetworkUser | NetworkTransactionManager'
+@a.frozen(init=False, eq=True, order=True, hash=True)
+class TransactionInfo(metaclass=abc.ABCMeta):
+    sender: 't.Union[NetworkUser, NetworkTransactionManager]'
     recipient: 'NetworkUser'
     amount: float
     fee: float = a.field(kw_only=True, default=0)
     message: t.Optional[str] = a.field(kw_only=True, default=None)
 
-    def __attrs_post_init__(self):
-        self.fee = self.fee or self.recipient.network.transaction_fees
-
     def __repr__(self):
-        return '<TransactionInfo {0.sender} ==> {0.recipient} amount={0.amount} (fee={0.fee}) | message="{0.message}">'.format(
+        return '<{0.__class__.__name__} {0.sender} ==> {0.recipient} amount={0.amount} (fee={0.fee}) | message="{0.message}">'.format(
             self
         )
 
     def __str__(self):
-        return '%s@%i' % (__class__.__name__, id(self))
+        return '%s@%i' % (self.__class__.__name__, id(self))
+
+
+@a.define(eq=True, order=True, hash=True)
+class GenericTransactionInfo(TransactionInfo):
+    fee: float = a.field(
+        kw_only=True,
+        default=Network().transaction_fees,
+        validator=a.validators.ge(Network().transaction_fees),
+    )
+
+
+@a.define(eq=True, order=True, hash=True)
+class SpecialTransactionInfo(TransactionInfo):
+    fee: float = a.field(init=False, default=0)
 
 
 class TransactionType(e.Enum):
@@ -140,20 +158,22 @@ class Transaction:
     type: TransactionType = a.field(default=TransactionType.GENERIC, kw_only=True)
 
     def __repr__(self):
-        return '<Transaction #{0.index} submitter={0.submitter} info={0.info} | \n     signature={0.signature}>'.format(
+        return '<{0.__class__.__name__} #{0.index} submitter={0.submitter} info={0.info} | \n     signature={0.signature}>'.format(
             self
         )
 
     def __str__(self):
-        return '%s@%i' % (__class__.__name__, id(self))
+        return '%s@%i' % (self.__class__.__name__, id(self))
 
     def __bytes__(self):
         return self.__repr__().encode('utf-8')
 
 
 @a.define(eq=True, order=True, hash=True)
-class Transactions(list[Transaction]):
-    capacity: int = a.field(default=10, init=False, repr=False)
+class Transactions(list[Transaction]):  # type: ignore[override]
+    @property
+    def capacity(self):
+        return Network().block_size
 
     @property
     def generic(self):
@@ -206,28 +226,27 @@ class Transactions(list[Transaction]):
         logger.debug('Appended %s to %s' % (transaction, self))
 
     def __repr__(self):
-        return '[Transactions: \n%s\n ]' % '\n'.join(
+        return '[{0.__class__.__name__}: \n%s\n ]'.format(self) % '\n'.join(
             ('    %s,' % repr(t) for t in self)
         )
 
     def __str__(self):
-        return '%s@%i' % (__class__.__name__, id(self))
+        return '%s@%i' % (self.__class__.__name__, id(self))
 
 
 @a.define(eq=True, order=True, hash=True)
 class Ledger:
-    transactions: Transactions
-    _user: 't.Optional[ExpensingUser]' = a.field(default=None, init=False, hash=False)
-    tally: 't.Optional[Tally]' = a.field(default=None, init=False)
-    tallied: bool = a.field(factory=bool, init=False)
+    transactions: Transactions = a.field(repr=False)
+    tally: 't.Optional[Tally]' = a.field(repr=False, init=False, default=None)
+    tallied: bool = a.field(init=False, factory=bool)
+    _user: 'ExpensingUser' = a.field(init=False, hash=False)
 
     def __bytes__(self) -> bytes:
         return self.__repr__().encode('utf-8')
 
     @property
     def user(self) -> 'ExpensingUser':
-        assert (u := self._user)
-        return u
+        return self._user
 
     def index_transaction_info(self, info: TransactionInfo, /):
         return f"{len(self.transactions)}#{info!r}".encode('utf-8')
@@ -246,7 +265,7 @@ class Ledger:
             raise LedgerNotFinalized("Ledger is not yet finalized")
         r_d = utils.freeze_dict(
             {
-                id(r_u): sum(map(lambda tx: tx.info.amount + tx.info.fee, txs_))
+                r_u.name: sum(map(lambda tx: tx.info.amount, txs_))
                 for r_u, txs_ in utils.groupby(
                     self.transactions, key=lambda tx: tx.info.recipient
                 ).items()
@@ -255,7 +274,7 @@ class Ledger:
 
         s_d = utils.freeze_dict(
             {
-                id(s_u): sum(map(lambda tx: -tx.info.amount - tx.info.fee, txs_))
+                s_u.name: sum(map(lambda tx: -tx.info.amount - tx.info.fee, txs_))
                 for s_u, txs_ in utils.groupby(
                     self.transactions.generic,
                     key=lambda tx: tx.info.sender,
@@ -268,7 +287,7 @@ class Ledger:
         return tally
 
 
-PartialTallyPairs: t.TypeAlias = 'utils.FrozenDict[int, float]'
+PartialTallyPairs: t.TypeAlias = 'utils.FrozenDict[str, float]'
 """A type alias for a dict type for a ledger tally"""
 
 
@@ -286,7 +305,7 @@ class Tally:
     def apply(self) -> 'ExpensingUser':
         if self.applied:
             raise TallyAlreadyApplied('This tally has already been applied')
-        self.ledger.user.balance += self.net_tally[id(self.ledger.user)]
+        self.ledger.user.balance += self.net_tally[self.ledger.user.name]
         self.applied = True
         return self.ledger.user
 
@@ -294,56 +313,59 @@ class Tally:
 @a.define(eq=True)
 class User(metaclass=abc.ABCMeta):
     name: str
-    private_key: rsa.RSAPrivateKey | bytes = a.field(
-        factory=lambda: rsa.generate_private_key(65537, key_size=2048),
-        repr=False,
-    )
+    serialized_private_key: bytes = a.field(init=False, repr=False)
 
-    def serialize(self, password: bytes):
-        assert isinstance(sk := self.private_key, rsa.RSAPrivateKey)
-        pem = sk.private_bytes(
+    def __attrs_post_init__(self):
+        sk_ = rsa.generate_private_key(65537, key_size=2048)
+        pem_ = sk_.private_bytes(
             encoding=srz.Encoding.PEM,
             format=srz.PrivateFormat.PKCS8,
-            encryption_algorithm=srz.BestAvailableEncryption(password),
+            encryption_algorithm=srz.BestAvailableEncryption(self.serialize_password),
         )
-        return a.evolve(self, private_key=pem)
+        self.serialized_private_key = pem_
 
-    def deserialize(self, password: bytes):
-        assert isinstance(srz_sk := self.private_key, bytes)
-        sk = srz.load_pem_private_key(
-            srz_sk,
-            password=password,
+    @property
+    def serialize_password(self) -> bytes:
+        return b'password123'
+
+    @property
+    def private_key(self):
+        assert isinstance(
+            sk := srz.load_pem_private_key(
+                self.serialized_private_key, self.serialize_password
+            ),
+            rsa.RSAPrivateKey,
         )
-        return a.evolve(self, private_key=sk)
+        return sk
 
 
-class NetworkTransactionManager(User, metaclass=utils.Singleton):
+class NetworkTransactionManager(User, metaclass=utils.SingletonMeta):
     def __init__(self):
-        return super().__init__(name='Rewarder')
+        return super().__init__(name=self.__repr__())
 
     def __repr__(self):
-        return 'Rewarder'
+        return self.__class__.__name__
 
 
 MANAGER = NetworkTransactionManager()
 
 
-@a.define(init=False, eq=True, order=True)
+@a.define(eq=True, order=True)
 class ExpensingUser(User, metaclass=abc.ABCMeta):
-    ledger: Ledger = a.field(
-        factory=lambda: Ledger(Transactions()), init=False, repr=False
-    )
     balance: float = a.field(
         default=0.0,
         kw_only=True,
         validator=a.validators.ge(0),
         on_setattr=a.setters.validate,
     )
-    caught_up_block_index: int = a.field(default=0, init=False)
+    caught_up_block_index: int = a.field(init=False, repr=False, default=0)
+    ledger: Ledger = a.field(init=False, repr=False)
 
     def __attrs_post_init__(self):
         # N.signed_up_users.add(self)
-        self.ledger._user = self
+        super().__attrs_post_init__()
+        self.ledger = Ledger(Transactions())
+        self.ledger._user = self  # pyright: reportPrivateUsage=false
 
     def cash_in(self, amount: float, /):
         self.balance += amount
@@ -365,7 +387,7 @@ class ExpensingUser(User, metaclass=abc.ABCMeta):
         self.caught_up_block_index += 1
         return self
 
-    def restart_all(self):
+    def finalize_tally(self):
         if not self.ledger.tallied:
             raise LedgerNotTallied("Ledger is not yet tallied")
         if not getattr(self.ledger.tally, 'applied', False):
@@ -382,9 +404,12 @@ class ExpensingUser(User, metaclass=abc.ABCMeta):
         return self
 
 
-@a.define(init=False, eq=True, order=True)
+@a.define(eq=True, order=True)
 class NetworkUser(ExpensingUser, metaclass=abc.ABCMeta):
-    network: Network = a.field(factory=Network, kw_only=True, repr=False, eq=False)
+    # network: Network = a.field(factory=Network, kw_only=True, repr=False, eq=False)
+    @property
+    def network(self):
+        return Network()
 
 
 class BasicUserMixin(NetworkUser, metaclass=abc.ABCMeta):
@@ -396,7 +421,7 @@ class BasicUserMixin(NetworkUser, metaclass=abc.ABCMeta):
         return self.network.transactions_history[self.caught_up_block_index]
 
     def broadcast_transaction(
-        self, tx_info: TransactionInfo, /, private_key: rsa.RSAPrivateKey
+        self, tx_info: GenericTransactionInfo, /, private_key: rsa.RSAPrivateKey
     ):
         i = len(self.ledger.transactions)
         data = self.ledger.index_transaction_info(tx_info)
@@ -447,18 +472,20 @@ class BasicUserMixin(NetworkUser, metaclass=abc.ABCMeta):
         return tx
 
     def update_transaction(self):
-        caught_up_network_txs, own_txs = (
+        caught_up_txs, own_txs = (
             self.caught_up_transactions,
             self.ledger.transactions,
         )
-        if own_txs != caught_up_network_txs:
+        if own_txs != caught_up_txs:
             own_txs.clear()
-            own_txs.extend(caught_up_network_txs)
+            own_txs.extend(caught_up_txs)
             # for tx in N.transactions_history:
             #     if tx not in self.ledger.transactions:
             #         logger.debug('%s appended %s their personal ledger' % (self, tx))
             #         self.ledger.transactions.append(tx)
             logger.info('%s updated their personal ledger' % self)
+        elif self.caught_up_block_index != self.network.current_block_index:
+            self.finalize_tally()
         return self
 
 
@@ -471,7 +498,7 @@ class MinerMixin(NetworkUser, metaclass=abc.ABCMeta):
             )
             raise LedgerNotFull("Ledger is not yet full")
         logger.info('%s started mining' % self)
-        for proof_of_work in itertools.count():
+        for proof_of_work in it.count():
             _h = hsh.Hash(auth.hash_algo)
             _h.update(self.ledger.transactions.root_hash)
             _h.update(proof_of_work.to_bytes(8, 'big', signed=False))
@@ -500,8 +527,8 @@ class MinerMixin(NetworkUser, metaclass=abc.ABCMeta):
         total_bonus = total_fees + self.network.block_reward
         assert isinstance(mng_sk := MANAGER.private_key, rsa.RSAPrivateKey)
 
-        fees_tx_info = TransactionInfo(
-            MANAGER, self, total_fees, fee=0, message='Transaction Fees Paidout'
+        fees_tx_info = SpecialTransactionInfo(
+            MANAGER, self, total_fees, message='Transaction Fees Paidout'
         )
         fees_tx_data = self.ledger.index_transaction_info(fees_tx_info)
         fees_tx_i = self.ledger.transactions.capacity
@@ -516,8 +543,8 @@ class MinerMixin(NetworkUser, metaclass=abc.ABCMeta):
             type=TransactionType.FEES_PAIDOUT,
         )
 
-        rwd_tx_info = TransactionInfo(
-            MANAGER, self, self.network.block_reward, fee=0, message='Block Reward'
+        rwd_tx_info = SpecialTransactionInfo(
+            MANAGER, self, self.network.block_reward, message='Block Reward'
         )
         rwd_tx_data = self.ledger.index_transaction_info(rwd_tx_info)
         rwd_tx_i = self.ledger.transactions.capacity + 1
@@ -546,7 +573,7 @@ class MinerMixin(NetworkUser, metaclass=abc.ABCMeta):
         block = self.network.block_chain.append(block_data)
         self.network.increment_block_index()
 
-        self.tally_up().apply().restart_all()
+        self.tally_up().apply().finalize_tally()
         logger.info(
             '%s successfully created a block and appended it to the block chain %s'
             % (self, self.network.block_chain)
@@ -592,7 +619,7 @@ class Block:
     prev_block_hash: t.Optional[str] = None
 
     def __str__(self):
-        return '%s@%i' % (__class__.__name__, id(self))
+        return '%s@%i' % (self.__class__.__name__, id(self))
 
     def __bytes__(self):
         return self.__repr__().encode('utf-8')
@@ -622,12 +649,12 @@ class BlockChain:
         return '\n  |\n  |\n'.join(map(repr, blocks))
 
     def __str__(self):
-        return '%s@%i' % (__class__.__name__, id(self))
+        return '%s@%i' % (self.__class__.__name__, id(self))
 
     def __len__(self):
         return sum(1 for _ in self)
 
-    def push(self, new_data: BlockData, /):
+    def front(self, new_data: BlockData, /):
         new_block = Block(new_data)
         new_block.next = self.head
         if self.head is not None:
