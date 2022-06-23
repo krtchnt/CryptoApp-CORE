@@ -286,7 +286,7 @@ class Ledger:
         return tally
 
 
-PartialTallyPairs: t.TypeAlias = 'utils.FrozenDict[str, float]'
+PartialTallyPairs = utils.FrozenDict[str, float]
 """A type alias for a dict type for a ledger tally"""
 
 
