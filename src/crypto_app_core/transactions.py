@@ -15,8 +15,7 @@ import cryptography.exceptions as crypto_exc
 from cryptography.hazmat.primitives import hashes as hsh, serialization as srz
 from cryptography.hazmat.primitives.asymmetric import padding as pdd, rsa
 
-from . import auth
-from .lib import utils
+from . import auth, utils
 
 
 logger = logging.getLogger(__name__)
