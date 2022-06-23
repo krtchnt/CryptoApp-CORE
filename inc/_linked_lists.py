@@ -34,10 +34,10 @@ class LinkedList:
         return ' ⮂ '.join(map(repr, nodes))
 
     def __len__(self):
-        l = 0
+        i = 0
         for _ in self:
-            l += 1
-        return l
+            i += 1
+        return i
 
     # Define the push method to add elements at the begining
     def push(self, new_data: Something):
@@ -66,5 +66,4 @@ class LinkedList:
     def view(self, node: t.Optional[Node]):
         while node is not None:
             print(node.data),
-            _last = node
             node = node.next

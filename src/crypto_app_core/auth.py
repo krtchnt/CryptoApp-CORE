@@ -34,13 +34,13 @@ hash_algos: t.Final[dict[str, hsh.HashAlgorithm]] = {
 pepper: t.Final[str] = os.environ.get('CRYPTOAPP_PEPPER', '')
 
 
-def hash_64(data_bytes: bytes, /, hash_algo_: hsh.HashAlgorithm = hash_algo):
+def hash_64(data_bytes: bytes, /, hash_algo_: hsh.HashAlgorithm = hash_algo) -> str:
     b64_bytes = b64.b64encode(hash_(data_bytes, hash_algo_))
     hashed_data = b64_bytes.decode('ascii')
     return hashed_data
 
 
-def hash_(data_bytes: bytes, /, hash_algo_: hsh.HashAlgorithm = hash_algo):
+def hash_(data_bytes: bytes, /, hash_algo_: hsh.HashAlgorithm = hash_algo) -> bytes:
     hashed_bytes = hsh.Hash(hash_algo_)
     hashed_bytes.update(data_bytes)
     return hashed_bytes.finalize()

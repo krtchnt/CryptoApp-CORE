@@ -4,13 +4,22 @@ import functools as ft
 import collections as cl
 
 
-class Singleton(abc.ABCMeta, type):
-    _instances: 'dict[type, Singleton]' = {}
+class SingletonMeta(abc.ABCMeta, type):
+    _instances: 'dict[type, SingletonMeta]' = {}
 
     def __call__(cls, *args: t.Any, **kwargs: t.Any):
         if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+            cls._instances[cls] = super(SingletonMeta, cls).__call__(*args, **kwargs)
         return cls._instances[cls]
+
+
+# class Singleton(metaclass=abc.ABCMeta):
+#     _instance: 't.Optional[Singleton]' = None
+
+#     def __new__(cls, *args: t.Any):
+#         if not cls._instance:
+#             cls._instance = super(Singleton, cls).__new__(cls, *args)
+#         return cls._instance
 
 
 __E = t.TypeVar('__E')
@@ -20,10 +29,10 @@ FrozenDict = tuple[tuple[_KE, __E], ...]
 
 
 def groupby(
-    seq: t.Iterable[__E], /, *, key: t.Callable[[__E], _KE] = lambda e: e
+    seq: t.Iterable[__E], /, *, key: t.Callable[[__E], _KE] = lambda e: e  # type: ignore[assignment, return-value]
 ) -> dict[_KE, list[__E]]:
     d: dict[_KE, list[__E]] = cl.defaultdict(list)
-    return ft.reduce(lambda grp, val: grp[key(val)].append(val) or grp, seq, d)
+    return ft.reduce(lambda grp, val: grp[key(val)].append(val) or grp, seq, d)  # type: ignore[func-returns-value]
 
 
 def freeze_dict(d: dict[__E, _KE]) -> FrozenDict[__E, _KE]:
@@ -31,8 +40,8 @@ def freeze_dict(d: dict[__E, _KE]) -> FrozenDict[__E, _KE]:
 
 
 def dict_merge(
-    d1: dict[_KE, __E] | FrozenDict[_KE, __E],
-    d2: dict[_KE, __E] | FrozenDict[_KE, __E],
+    d1: t.Union[dict[_KE, __E], FrozenDict[_KE, __E]],
+    d2: t.Union[dict[_KE, __E], FrozenDict[_KE, __E]],
     merge_fn: t.Callable[[__E, __E], __E] = lambda x, y: y,
 ):
     """
